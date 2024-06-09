@@ -8,19 +8,20 @@ contract MultiSig {
     event Revoke(address indexed admin, uint indexed txID);
     event Execute(uint indexed txID);
 
-    struct Proposal {
-        bool method;       // true is mint proposal, false is burn proposal
+    struct Transaction {
+        address to;       
         uint value;
+        bytes data;
         bool executed;
     }
 
-    address gNairaContractAddress;
+    //address gNairaContractAddress;
 
     address[] public admins;
     mapping(address => bool) public isAdmin;
     uint public required;
 
-    Proposal[] public proposals;
+    Transaction[] public transactions;
     mapping(uint => mapping(address => bool)) public approved;
 
     //this modifier checks is caller is a multiSig admin
@@ -30,28 +31,28 @@ contract MultiSig {
     }
 
     //this modifier checks if a proposal exists
-    modifier pplExists(uint _pplID) {
-        require(_pplID < proposals.length, "proposal does not exist");
+    modifier txExists(uint _txID) {
+        require(_txID < transactions.length, "proposal does not exist");
         _;
     } 
 
     //this modifier checks that a proposal is not approved yet
-    modifier notApproved(uint _pplID) {
-        require(!approved[_pplID][msg.sender], "proposal already approved");
+    modifier notApproved(uint _txID) {
+        require(!approved[_txID][msg.sender], "proposal already approved");
         _;
     }
 
     //this modifier checks if a mint/burn proposal has not been executed
-    modifier notExecuted(uint _pplID) {
-        require(!proposals[_pplID].executed, "proposal already executed");
+    modifier notExecuted(uint _txID) {
+        require(!transactions[_txID].executed, "proposal already executed");
         _;
     }
 
     //this modifier ensures caller is gNairaContract
-    modifier onlygNairaContract() {
-        require(msg.sender == gNairaContractAddress);
-        _;
-    }
+    // modifier onlygNairaContract() {
+    //     require(msg.sender == gNairaContractAddress);
+    //     _;
+    // }
 
     /* upon deployment, an array of admins must be initialized and the required amount of
     signatures for proposals must be initailized. */
@@ -78,33 +79,28 @@ contract MultiSig {
         emit Deposit(msg.sender, msg.value);
     }
 
-    //this function is called after deployment to set the gNairaContract address for interaction
-    function setgNairaContractAddress(address _gNairaContract) public {
-        gNairaContractAddress = _gNairaContract;
-    }
-
     /*this method can only be called by the gNairaContract when the governor wants to mint or burn.
     this method is used to submit a mint or burn proposal for approval by multiSig admins*/
-    function submit(bool _method, uint _value) external onlygNairaContract {
-        Proposal memory newProposal = Proposal(_method, _value, false);
-        proposals.push(newProposal);
+    function submit(address _to, uint _value, bytes calldata _data) external onlyAdmin {
+        Transaction memory newTransaction = Transaction(_to, _value, _data, false);
+        transactions.push(newTransaction);
         
-        emit Submit(proposals.length - 1);
+        emit Submit(transactions.length - 1);
     }
 
     /*this function is called by admins to approve proposals
     */
-    function adminTxApprove(uint _pplID) 
-    external onlyAdmin pplExists(_pplID) notApproved(_pplID) notExecuted(_pplID) {
-        approved[_pplID][msg.sender] = true;
-        emit Approve(msg.sender, _pplID);
+    function adminTxApprove(uint _txID) 
+    external onlyAdmin txExists(_txID) notApproved(_txID) notExecuted(_txID) {
+        approved[_txID][msg.sender] = true;
+        emit Approve(msg.sender, _txID);
     }
 
     //returns the approval count per proposal
-    function getApprovalCount(uint _pplID) public view returns (uint count) {
+    function getApprovalCount(uint _txID) private view returns (uint count) {
         //this loops through all admins in the 'admin array' and checks for approval for a proposal 
         for (uint i; i < admins.length; i++) {
-            if(approved[_pplID][msg.sender]) {
+            if(approved[_txID][msg.sender]) {
                 count += 1;
             }
         }
@@ -113,31 +109,23 @@ contract MultiSig {
 
     /*this function is called when a proposal is to be executed. the proposal must have
     the minimum amount of required approvals to be executed*/
-    function execute(uint _pplID) external pplExists(_pplID) notExecuted(_pplID) {  //isGovernor?
-        require(getApprovalCount(_pplID) >= required, "not enough approvals");
-        Proposal storage proposal = proposals[_pplID];
-        proposal.executed = true;
+    function execute(uint _txID) external txExists(_txID) notExecuted(_txID) {  //isGovernor?
+        require(getApprovalCount(_txID) >= required, "not enough approvals");
+        Transaction storage transaction = transactions[_txID];
+        transaction.executed = true;
 
-        //check if the gNaira contract address has been set and creates an instance for it to use for interaction
-        require(gNairaContractAddress != address(0), "gNaira address has not been initialized");
-        gNaira g_naira = gNaira(gNairaContractAddress);
-
-        if(proposal.method) {                   //true value = mint
-            
-            g_naira.mintTokens(proposal.value);
-
-        } else if(!proposal.method) {           //false value = burn
-            g_naira.burnTokens(proposal.value);
-        }
+        (bool success, ) = transaction.to.call{value: transaction.value}(
+            transaction.data
+        );
+        require(success, "transaction failed");
         
-        emit Execute(_pplID);
+        emit Execute(_txID);
     }
 
     // this function is used to revoke approval for a proposal by an admin
-    function revoke(uint _pplID) external onlyAdmin pplExists(_pplID) notExecuted(_pplID) {
-        require(approved[_pplID][msg.sender], "transaction not approved");
-        approved[_pplID][msg.sender] = false;
-        emit Revoke(msg.sender, _pplID);
+    function revoke(uint _txID) external onlyAdmin txExists(_txID) notExecuted(_txID) {
+        require(approved[_txID][msg.sender], "transaction not approved");
+        approved[_txID][msg.sender] = false;
+        emit Revoke(msg.sender, _txID);
     } 
-}
 }
